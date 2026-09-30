@@ -1,0 +1,26 @@
+{
+  "name": "student-doc-vault",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Secure storage for student certificates (mark sheets, TC, Aadhaar) with soft-copy download by Student ID",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "start": "node --env-file=.env server.js",
+    "create-admin": "node --env-file=.env scripts/create-admin.js",
+    "backup": "node --env-file=.env scripts/backup.js",
+    "restore-backup": "node --env-file=.env scripts/restore-backup.js",
+    "protect-key": "node --env-file=.env scripts/protect-key.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "express-session": "^1.19.0",
+    "helmet": "^8.3.0",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.12"
+  }
+}

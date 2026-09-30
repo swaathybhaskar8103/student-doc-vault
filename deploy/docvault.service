@@ -1,0 +1,22 @@
+[Unit]
+Description=DocVault student document storage
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+User=docvault
+Group=docvault
+WorkingDirectory=/opt/docvault
+ExecStart=/usr/bin/node --env-file=.env server.js
+Restart=always
+RestartSec=5
+# Sandbox: the app can only write to its data and backup folders.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/docvault/data /opt/docvault/backups
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

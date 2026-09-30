@@ -1,0 +1,15 @@
+[Unit]
+Description=DocVault encrypted backup
+
+[Service]
+Type=oneshot
+User=docvault
+Group=docvault
+WorkingDirectory=/opt/docvault
+ExecStart=/usr/bin/node --env-file=.env scripts/backup.js
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/docvault/data /opt/docvault/backups
+UMask=0077
