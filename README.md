@@ -136,7 +136,7 @@ Useful on the server: `sudo systemctl status docvault`, `sudo journalctl -u docv
 | Someone guesses/knows a Student ID | Login needs ID **and** password. IDs are random, not sequential |
 | Password guessing | 5 wrong tries locks the account for 15 min; 20 attempts per IP per 15 min |
 | Stolen database | Passwords hashed with scrypt + salt; never stored in plain text |
-| Stolen server disk / backup | Every file encrypted with AES-256-GCM before being written; plaintext never touches disk. With `protect-key` the key itself is not on the disk either |
+| Stolen server disk / backup | Every file encrypted with AES-256-GCM before being written. The only decrypted copy is a few-second temp file during the AI check, kept in memory (`/dev/shm`) on Linux and cleaned up at startup. With `protect-key` the key itself is not on the disk either |
 | Student A opening Student B's file | Every download query checks `student_id` = logged-in student |
 | File tampered with on disk | GCM authentication tag detects it; download is refused |
 | Malicious upload (script renamed .pdf) | File type checked from its actual bytes, not its name |
@@ -149,6 +149,17 @@ Useful on the server: `sudo systemctl status docvault`, `sudo journalctl -u docv
 | Server lost or broken | Daily encrypted backups; restore is verified by GCM authentication |
 | Unsafe online settings | Production mode refuses to start without an https `APP_URL` and email; app listens on 127.0.0.1 behind Caddy |
 | Leaked Aadhaar numbers | Full Aadhaar cards are accepted but stored encrypted like every file; the AI's notes keep only the last 4 digits |
+
+## Known limitations
+
+- **The AI check can be fooled.** With `AI_AUTO_DECISION=true`, a convincing fake certificate (or an image
+  with misleading text) may be verified without a person looking at it. Staff can still open and override
+  any verified document from the review queue.
+- **"College network" is only as narrow as the college's IP address.** If students on campus Wi-Fi share the
+  office's public IP, they can reach the staff login page, where a shared staff password (two-step login
+  off) is the only protection; five wrong tries also lock the staff account for 15 minutes. Using the
+  office's own network/VPN address, or individual staff accounts with `STAFF_TWO_STEP=true`, closes this.
+- **Email isn't verified at sign-up**, so someone could register with another person's email address.
 
 ## Before going live (important)
 

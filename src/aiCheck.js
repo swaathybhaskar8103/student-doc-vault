@@ -36,8 +36,20 @@ const commandExists = (cmd) => run('which', [cmd]).then(() => true, () => false)
 // pdftoppm (poppler) renders PDFs; sips ships with macOS; ImageMagick's convert does the job on Linux.
 const tools = { pdftoppm: commandExists('pdftoppm'), sips: commandExists('sips'), convert: commandExists('convert') };
 
+// The converters need real files, so the decrypted document briefly exists as a temp file. On Linux that
+// goes in /dev/shm (memory, never written to disk); elsewhere in the OS temp folder. Either way it is
+// deleted as soon as the image is made, and leftovers from a crash are removed at startup.
+const TEMP_BASE = fs.existsSync('/dev/shm') ? '/dev/shm' : os.tmpdir();
+const TEMP_PREFIX = 'docvault-ai-';
+
+function removeLeftoverTempFiles() {
+  for (const name of fs.readdirSync(TEMP_BASE)) {
+    if (name.startsWith(TEMP_PREFIX)) fs.rmSync(path.join(TEMP_BASE, name), { recursive: true, force: true });
+  }
+}
+
 async function toJpegBase64(doc, plain) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docvault-ai-'));
+  const dir = fs.mkdtempSync(path.join(TEMP_BASE, TEMP_PREFIX));
   try {
     const ext = { 'application/pdf': 'pdf', 'image/png': 'png', 'image/jpeg': 'jpg' }[doc.mime_type];
     const input = path.join(dir, `in.${ext}`);
@@ -270,8 +282,9 @@ export function startAiWorker() {
     console.log('AI document check is off (set AI_ENABLED=true in .env to turn it on).');
     return;
   }
-  // A check interrupted by a restart goes back in the queue.
+  // A check interrupted by a restart goes back in the queue, and any temp copy it left is removed.
   db.prepare("UPDATE documents SET ai_status = 'queued' WHERE ai_status = 'checking'").run();
+  removeLeftoverTempFiles();
   console.log(`AI document check on: ${AI_MODEL} via ${OLLAMA_URL} (runs on this computer only).`);
   if (AI_AUTO_DECISION) {
     console.log('AI makes the decision: looks good -> Verified, problem -> Rejected; "needs a look" waits for staff.');

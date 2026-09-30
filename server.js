@@ -125,6 +125,14 @@ const authLimiter = rateLimit({
   message: 'Too many attempts from this network. Please wait 15 minutes and try again.',
 });
 
+// Per student, not per IP: stops one account flooding the AI queue and the disk.
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  keyGenerator: (req) => req.student.id,
+  handler: (req, res) => flash(req, res, 'error', 'You have uploaded a lot in the last hour. Please wait a while before uploading more.'),
+});
+
 const upload = multer({
   storage: multer.memoryStorage(), // nothing unencrypted ever touches the disk
   limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 5 },
@@ -253,10 +261,13 @@ app.post('/forgot-password', authLimiter, checkCsrf, (req, res) => {
 
   const student = findStudentByLogin(login);
   const now = Date.now();
-  // At most one code per minute per account, so this can't be used to flood someone's inbox.
+  // At most one code per minute and 5 per day per account: stops inbox flooding, and stops an attacker
+  // from requesting code after code to keep guessing.
   const recent = student && db.prepare('SELECT 1 FROM password_resets WHERE student_id = ? AND created_at > ?')
     .get(student.id, now - 60 * 1000);
-  if (student && !recent) {
+  const today = student ? db.prepare('SELECT COUNT(*) AS n FROM password_resets WHERE student_id = ? AND created_at > ?')
+    .get(student.id, now - 24 * 60 * 60 * 1000).n : 0;
+  if (student && !recent && today < 5) {
     const code = randomResetCode();
     db.prepare('UPDATE password_resets SET used = 1 WHERE student_id = ? AND used = 0').run(student.id); // only the newest code works
     db.prepare('INSERT INTO password_resets (student_id, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?)')
@@ -453,7 +464,7 @@ app.get('/done', requireAuth, (req, res) => {
 
 // ---------- documents ----------
 
-app.post('/documents', requireAuth, upload.single('file'), checkCsrf, (req, res) => {
+app.post('/documents', requireAuth, uploadLimiter, upload.single('file'), checkCsrf, (req, res) => {
   const docType = String(req.body.doc_type ?? '');
   if (!isUploadable(docType)) return flash(req, res, 'error', 'Please choose a document type.');
   if (!docInfo(docType).multiple && db.prepare('SELECT 1 FROM documents WHERE student_id = ? AND doc_type = ?').get(req.student.id, docType)) {
@@ -501,7 +512,7 @@ app.get('/documents/:id/replace', requireAuth, (req, res) => {
   render(req, res, 'replaceDocument', { doc });
 });
 
-app.post('/documents/:id/replace', requireAuth, upload.single('file'), checkCsrf, (req, res) => {
+app.post('/documents/:id/replace', requireAuth, uploadLimiter, upload.single('file'), checkCsrf, (req, res) => {
   const old = findOwnDoc(req);
   if (!old) return flash(req, res, 'error', 'Document not found.');
   if (!canReplace(old)) return flash(req, res, 'error', 'This document can only be replaced if it was rejected or the AI check found a problem.');

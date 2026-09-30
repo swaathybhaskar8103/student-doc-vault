@@ -7,6 +7,11 @@ export const FILES_DIR = path.join(DATA_DIR, 'files');
 fs.mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 });
 
 export const db = new DatabaseSync(path.join(DATA_DIR, 'vault.db'));
+// Owner-only: the database holds names and emails. New -wal/-shm files copy the main file's mode.
+for (const suffix of ['', '-wal', '-shm']) {
+  const file = path.join(DATA_DIR, `vault.db${suffix}`);
+  if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
+}
 db.exec(`
   PRAGMA foreign_keys = ON;
   PRAGMA journal_mode = WAL;
