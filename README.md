@@ -3,13 +3,62 @@
 Students upload their certificates (mark sheets, TC, masked Aadhaar…) once and download
 soft copies any time, so they don't need to borrow the originals from the college for a photocopy.
 
-## Run it
+## Set up on your own laptop
+
+Works on **macOS** and **Windows** (Linux too). For the AI check, the laptop should have **16 GB of RAM**.
+
+### 1. Install (once)
+
+| What | Mac | Windows |
+|---|---|---|
+| **Git** | already installed (or `xcode-select --install`) | git-scm.com |
+| **Node.js 24 LTS** or newer | nodejs.org | nodejs.org |
+| **Ollama** (runs the AI on the laptop) | ollama.com | ollama.com |
+| PDF support for the AI check | built in | Poppler for Windows, with its `bin` folder added to PATH (without it, PDFs simply wait for staff review) |
+| `cloudflared` (only to share online) | `brew install cloudflared` | `winget install --id Cloudflare.cloudflared` |
+
+### 2. Get the code
 
 ```bash
+git clone https://github.com/swaathybhaskar8103/student-doc-vault.git
+cd student-doc-vault
 npm install
-npm run setup   # creates .env with random secret keys (only once!)
-npm start       # http://localhost:3000
+npm run setup                 # creates .env with new secret keys (only once!)
+ollama pull qwen2.5vl:7b      # the AI model, about 6 GB
 ```
+
+The repository is private: sign in to GitHub when `git clone` asks.
+
+### 3. Email settings
+
+Open `.env` in a text editor and fill in the Gmail account that sends DocVault emails
+(an **app password** from myaccount.google.com/apppasswords, not the normal Gmail password):
+
+```
+SMTP_USER=vaultdoc7@gmail.com
+SMTP_PASS=the16letterapppassword
+MAIL_FROM=DocVault <vaultdoc7@gmail.com>
+```
+
+On a laptop with less than 16 GB of RAM, also set `AI_ENABLED=false` (staff then review every document).
+
+### 4. Start it
+
+```bash
+npm start                     # http://localhost:3000 ; Ctrl+C stops it
+```
+
+- **Students:** http://localhost:3000
+- **First staff account:** open http://localhost:3000/admin/login; the first time, it shows a setup page.
+  After that, add other staff from the **Staff** page.
+- **Online for others** (e.g. the viva): `npm run share` instead of `npm start`, then share the link it prints.
+
+### 5. Keep safe
+
+- `.env` holds the keys that decrypt every document. **Never upload or share it.** Keep a copy of
+  `MASTER_KEY` and `BACKUP_PASSPHRASE` somewhere safe (e.g. a password manager).
+- `npm run backup` makes an encrypted backup in `backups/`. Copy it somewhere off the laptop.
+- To get code updates later: `git pull`, then start again.
 
 ## How it works
 
@@ -175,15 +224,16 @@ Useful on the server: `sudo systemctl status docvault`, `sudo journalctl -u docv
 
 ## Before going live (important)
 
-- **HTTPS is mandatory.** Deploy behind HTTPS and set `NODE_ENV=production` in `.env`.
-- **Back up `MASTER_KEY`** separately from the data. If it's lost, no file can ever be decrypted.
-  If it leaks together with the `data/` folder, the encryption is useless.
-- **Aadhaar:** store only the *masked* Aadhaar (last 4 digits visible). Storing full Aadhaar numbers
-  is restricted under the Aadhaar Act / UIDAI rules.
-- Sessions live in memory: restarting the server logs everyone out. Fine for a demo.
+- **HTTPS is mandatory.** `npm run share` and the Oracle deploy both give HTTPS; online mode refuses to start without it.
+- **Lock the key:** `npm run protect-key`, and keep the recovery key and `BACKUP_PASSPHRASE` off the server.
+- **Aadhaar:** full Aadhaar cards are accepted (encrypted like every file). UIDAI guidance prefers masked
+  Aadhaar; the college should decide which it needs.
+- Set `STAFF_ALLOWED_NETWORKS` to the college office's own address if possible (see Known limitations).
 
 ## Ideas for next version
 
-- Password reset via email OTP (currently a forgotten password can't be recovered).
-- Two-factor login (OTP to email/phone).
+- Email verification at sign-up.
+- "Verified by AI" shown separately from "Verified by college", with a staff spot-check filter.
+- The AI says what it thinks a rejected document is ("this looks like a résumé").
 - Watermark downloads ("Soft copy for <name>, <date>").
+- Automatic deletion of documents some years after a student leaves (DPDP Act).

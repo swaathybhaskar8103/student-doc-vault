@@ -32,9 +32,13 @@ export const initialAiStatus = () => (AI_ENABLED ? 'queued' : null);
 
 // ---------- file -> image ----------
 
-const commandExists = (cmd) => run('which', [cmd]).then(() => true, () => false);
+const IS_WINDOWS = process.platform === 'win32';
+const commandExists = (cmd) => run(IS_WINDOWS ? 'where' : 'which', [cmd]).then(() => true, () => false);
 // pdftoppm (poppler) renders PDFs; sips ships with macOS; ImageMagick's convert does the job on Linux.
-const tools = { pdftoppm: commandExists('pdftoppm'), sips: commandExists('sips'), convert: commandExists('convert') };
+// ImageMagick 7 is `magick`; ImageMagick 6 (common on Linux) is `convert`. Never `convert` on Windows:
+// there it is a built-in disk-conversion tool, not ImageMagick.
+const imageMagick = commandExists('magick').then((yes) => (yes ? 'magick' : !IS_WINDOWS && commandExists('convert').then((c) => (c ? 'convert' : null))));
+const tools = { pdftoppm: commandExists('pdftoppm'), sips: commandExists('sips'), imageMagick };
 
 // The converters need real files, so the decrypted document briefly exists as a temp file. On Linux that
 // goes in /dev/shm (memory, never written to disk); elsewhere in the OS temp folder. Either way it is
@@ -61,11 +65,11 @@ async function toJpegBase64(doc, plain) {
       await run('pdftoppm', ['-jpeg', '-f', '1', '-l', '1', '-singlefile', '-scale-to', String(MAX_IMAGE_SIDE), input, path.join(dir, 'page')]);
     } else if (await tools.sips) {
       await run('sips', ['-s', 'format', 'jpeg', '-Z', String(MAX_IMAGE_SIDE), input, '--out', output]);
-    } else if (ext !== 'pdf' && (await tools.convert)) {
+    } else if (ext !== 'pdf' && (await tools.imageMagick)) {
       // [0] = first frame only; -auto-orient fixes sideways phone photos; ">" only ever shrinks
-      await run('convert', [`${input}[0]`, '-auto-orient', '-resize', `${MAX_IMAGE_SIDE}x${MAX_IMAGE_SIDE}>`, '-quality', '85', output]);
+      await run(await tools.imageMagick, [`${input}[0]`, '-auto-orient', '-resize', `${MAX_IMAGE_SIDE}x${MAX_IMAGE_SIDE}>`, '-quality', '85', output]);
     } else if (ext === 'pdf') {
-      throw new Error('No PDF renderer found. Install poppler (it provides pdftoppm).');
+      throw new Error('No PDF renderer found. Install poppler (it provides pdftoppm) so PDFs can be checked.');
     } else {
       return plain.toString('base64'); // no resizer available: send the image as uploaded
     }
