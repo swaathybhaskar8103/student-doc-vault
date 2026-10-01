@@ -46,7 +46,7 @@ if (IS_PROD) {
 }
 
 const app = express();
-if (IS_PROD) app.set('trust proxy', 1); // behind an HTTPS reverse proxy (Render, Railway, nginx…)
+if (IS_PROD) app.set('trust proxy', 1); // behind one HTTPS proxy on this machine (Caddy or cloudflared)
 
 app.use(helmet());
 app.use(express.static(path.join(import.meta.dirname, 'public')));
@@ -58,7 +58,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   rolling: true, // idle timeout: expires SESSION_MINUTES after the last request
-  cookie: { httpOnly: true, sameSite: 'strict', secure: IS_PROD, maxAge: SESSION_MINUTES * 60 * 1000 },
+  // 'auto': Secure whenever the visitor came in over HTTPS (always, through the HTTPS proxy or tunnel), while
+  // staff on the server itself can still use http://localhost.
+  cookie: { httpOnly: true, sameSite: 'strict', secure: IS_PROD ? 'auto' : false, maxAge: SESSION_MINUTES * 60 * 1000 },
 }));
 
 // Every page shows private data or a form token, so never let the browser or a proxy cache it.

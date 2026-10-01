@@ -10,7 +10,8 @@
     "create-admin": "node --env-file=.env scripts/create-admin.js",
     "backup": "node --env-file=.env scripts/backup.js",
     "restore-backup": "node --env-file=.env scripts/restore-backup.js",
-    "protect-key": "node --env-file=.env scripts/protect-key.js"
+    "protect-key": "node --env-file=.env scripts/protect-key.js",
+    "share": "node scripts/share.js"
   },
   "engines": {
     "node": ">=22.5"

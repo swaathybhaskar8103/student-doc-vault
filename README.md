@@ -110,6 +110,18 @@ Backups contain the database and the (already encrypted) document files, encrypt
 Copy backups off the server. **Store `MASTER_KEY` and `BACKUP_PASSPHRASE` somewhere safe, off the
 server**: without them nothing can be decrypted.
 
+## Share it online from this computer (free, no account)
+
+```bash
+npm run share      # prints a public https://….trycloudflare.com link; Ctrl+C stops sharing
+```
+
+Uses a free Cloudflare quick tunnel (`brew install cloudflared`). This computer stays the server: the site,
+documents and AI all stay here, and it only works while the computer is on (the command keeps a Mac
+awake). DocVault runs in online mode: secure cookies, and **staff pages only open on this computer**
+(`http://localhost:3000/admin/login`); visitors through the link only get the student pages. The link
+changes each time; a fixed name needs your own domain on a free Cloudflare account.
+
 ## Put it online (Oracle Cloud free server)
 
 1. **Server:** Oracle Cloud → Compute → Create instance → image **Ubuntu 24.04**, shape
