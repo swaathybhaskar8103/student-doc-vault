@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { db, FILES_DIR } from './db.js';
 import { hashPassword, verifyPassword, DUMMY_HASH, decryptFile, safeEqual, randomResetCode, hashResetCode } from './security.js';
-import { DOC_TYPES, UPLOADABLE_TYPES, LOCK_AFTER_FAILS, LOCK_MINUTES } from './config.js';
+import { DOC_TYPES, documentLabel, UPLOADABLE_TYPES, LOCK_AFTER_FAILS, LOCK_MINUTES, ALL_DEPARTMENTS, isDepartment, deptLabel } from './config.js';
 import { buildChecklist } from './checklist.js';
 import { sendReviewEmail, sendMissingDocsReminder, sendStaffLoginCode } from './mailer.js';
 import * as adminViews from './adminViews.js';
@@ -14,7 +14,7 @@ import { errorPage } from './views.js';
 import { isStaffNetwork } from './network.js';
 
 const STATUS_FILTERS = ['pending', 'verified', 'rejected', 'all'];
-const docLabel = (doc) => DOC_TYPES[doc.doc_type] ?? doc.doc_type;
+const docLabel = (doc) => documentLabel(doc);
 // Admin events go in the same audit table, keyed so they never show up in a student's activity list.
 const adminKey = (admin) => `admin:${admin.id}`;
 
@@ -44,6 +44,20 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
     next();
   };
 
+  // Department rule, applied inside every query that reads students or documents (not just hidden on screen):
+  // department staff only ever get rows of their own department; the college office ('ALL') gets every row.
+  // Usage: `... WHERE ${SCOPE} ...` with `...scope(req)` in the parameters (students table aliased `s`).
+  const SCOPE = "(? = 'ALL' OR s.department = ?)";
+  const scope = (req) => [req.admin.department, req.admin.department];
+  const isOffice = (req) => req.admin.department === ALL_DEPARTMENTS;
+
+  // Managing staff and changing a student's department: college office only.
+  const requireOffice = (req, res, next) => {
+    if (isOffice(req)) return next();
+    req.session.adminFlash = { type: 'error', msg: 'Only an admin (Office / Principal) can do that.' };
+    res.redirect('/admin/students');
+  };
+
   const flash = (req, res, type, msg, to = '/admin') => {
     req.session.adminFlash = { type, msg };
     res.redirect(to);
@@ -54,11 +68,15 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
     return f;
   };
 
-  const findDoc = (id) =>
+  // A document outside the staff member's department is simply "not found".
+  const findDoc = (req, id) =>
     db.prepare(
-      `SELECT d.*, s.name AS student_name, s.email AS student_email
-       FROM documents d JOIN students s ON s.id = d.student_id WHERE d.id = ?`,
-    ).get(id);
+      `SELECT d.*, s.name AS student_name, s.email AS student_email, s.department AS student_department
+       FROM documents d JOIN students s ON s.id = d.student_id WHERE d.id = ? AND ${SCOPE}`,
+    ).get(id, ...scope(req));
+  const pendingCount = (req) => db.prepare(
+    `SELECT COUNT(*) AS n FROM documents d JOIN students s ON s.id = d.student_id WHERE d.status = 'pending' AND ${SCOPE}`,
+  ).get(...scope(req)).n;
 
   const staffCount = () => db.prepare('SELECT COUNT(*) AS n FROM admins').get().n;
   // First-time setup is only offered to someone sitting at the server itself, never over the internet.
@@ -208,28 +226,30 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
 
   // ---------- staff management ----------
 
-  const listStaff = () => db.prepare('SELECT id, name, email, created_at FROM admins ORDER BY created_at').all();
+  const listStaff = () => db.prepare('SELECT id, name, email, department, created_at FROM admins ORDER BY created_at').all();
   const renderStaff = (req, res, data = {}, status = 200) =>
     render(req, res, 'adminStaff', { staff: listStaff(), flash: takeFlash(req), ...data }, status);
 
-  app.get('/admin/staff', requireAdmin, (req, res) => renderStaff(req, res));
+  app.get('/admin/staff', requireAdmin, requireOffice, (req, res) => renderStaff(req, res));
 
-  app.post('/admin/staff', requireAdmin, checkCsrf, async (req, res) => {
+  app.post('/admin/staff', requireAdmin, requireOffice, checkCsrf, async (req, res) => {
     const form = readStaffForm(req.body);
+    const department = String(req.body.department ?? '');
     const errors = validateStaff(form);
+    if (department !== ALL_DEPARTMENTS && !isDepartment(department)) errors.push('Choose which department this staff member looks after.');
     if (!errors.length && db.prepare('SELECT 1 FROM admins WHERE email = ?').get(form.email)) {
       errors.push('A staff account with this email already exists.');
     }
-    if (errors.length) return renderStaff(req, res, { addErrors: errors, values: form }, 400);
+    if (errors.length) return renderStaff(req, res, { addErrors: errors, values: { ...form, department } }, 400);
 
     const id = crypto.randomUUID();
-    db.prepare('INSERT INTO admins (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, form.name, form.email, await hashPassword(form.password), Date.now());
-    audit(req, adminKey(req.admin), 'staff_added', form.email);
-    flash(req, res, 'success', `Staff account created for ${form.name}. Give them the password in person, not by email.`, '/admin/staff');
+    db.prepare('INSERT INTO admins (id, name, email, department, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, form.name, form.email, department, await hashPassword(form.password), Date.now());
+    audit(req, adminKey(req.admin), 'staff_added', `${form.email} (${deptLabel(department)})`);
+    flash(req, res, 'success', `Staff account created for ${form.name} (${deptLabel(department)}). Give them the password in person, not by email.`, '/admin/staff');
   });
 
-  app.post('/admin/staff/:id/delete', requireAdmin, checkCsrf, (req, res) => {
+  app.post('/admin/staff/:id/delete', requireAdmin, requireOffice, checkCsrf, (req, res) => {
     if (req.params.id === req.admin.id) return flash(req, res, 'error', "You can't remove your own account.", '/admin/staff');
     const target = db.prepare('SELECT id, name, email FROM admins WHERE id = ?').get(req.params.id);
     if (!target) return flash(req, res, 'error', 'Staff account not found.', '/admin/staff');
@@ -286,8 +306,8 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
     const status = STATUS_FILTERS.includes(req.query.status) ? req.query.status : 'pending';
     const q = String(req.query.q ?? '').trim().slice(0, 100);
 
-    const where = [];
-    const params = [];
+    const where = [SCOPE];
+    const params = [...scope(req)];
     if (status !== 'all') {
       where.push('d.status = ?');
       params.push(status);
@@ -301,37 +321,39 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
       ? "CASE d.ai_verdict WHEN 'fail' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, d.uploaded_at ASC"
       : 'd.uploaded_at DESC';
     const docs = db.prepare(
-      `SELECT d.id, d.doc_type, d.original_name, d.size, d.uploaded_at, d.status, d.reviewed_by, d.reviewed_at,
+      `SELECT d.id, d.doc_type, d.title, d.original_name, d.size, d.uploaded_at, d.status, d.reviewed_by, d.reviewed_at,
               d.ai_status, d.ai_verdict, d.ai_summary, s.id AS student_id, s.name AS student_name
        FROM documents d JOIN students s ON s.id = d.student_id
-       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       WHERE ${where.join(' AND ')}
        ORDER BY ${order}
        LIMIT 200`,
     ).all(...params);
-    const aiPassedCount = db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'pending' AND ai_verdict = 'ok'").get().n;
+    const aiPassedCount = db.prepare(
+      `SELECT COUNT(*) AS n FROM documents d JOIN students s ON s.id = d.student_id WHERE d.status = 'pending' AND d.ai_verdict = 'ok' AND ${SCOPE}`,
+    ).get(...scope(req)).n;
 
     // Tab counts follow the search box, so "Pending 3" means 3 matching documents.
     const counts = { pending: 0, verified: 0, rejected: 0 };
     const countRows = db.prepare(
       `SELECT d.status, COUNT(*) AS n FROM documents d JOIN students s ON s.id = d.student_id
-       ${q ? 'WHERE s.id LIKE ? OR s.name LIKE ? OR s.email LIKE ?' : ''} GROUP BY d.status`,
-    ).all(...(q ? [`%${q}%`, `%${q}%`, `%${q}%`] : []));
+       WHERE ${SCOPE} ${q ? 'AND (s.id LIKE ? OR s.name LIKE ? OR s.email LIKE ?)' : ''} GROUP BY d.status`,
+    ).all(...scope(req), ...(q ? [`%${q}%`, `%${q}%`, `%${q}%`] : []));
     for (const r of countRows) counts[r.status] = r.n;
     counts.all = counts.pending + counts.verified + counts.rejected;
-    const studentCount = db.prepare('SELECT COUNT(*) AS n FROM students').get().n;
+    const studentCount = db.prepare(`SELECT COUNT(*) AS n FROM students s WHERE ${SCOPE}`).get(...scope(req)).n;
 
     render(req, res, 'adminQueue', { docs, status, q, counts, studentCount, aiPassedCount, flash: takeFlash(req) });
   });
 
   // ---------- bulk verify what the AI already passed ----------
 
-  const aiPassedPending = () => db.prepare(
+  const aiPassedPending = (req) => db.prepare(
     `SELECT d.*, s.name AS student_name, s.email AS student_email FROM documents d JOIN students s ON s.id = d.student_id
-     WHERE d.status = 'pending' AND d.ai_verdict = 'ok' ORDER BY d.uploaded_at`,
-  ).all();
+     WHERE d.status = 'pending' AND d.ai_verdict = 'ok' AND ${SCOPE} ORDER BY d.uploaded_at`,
+  ).all(...scope(req));
 
   app.get('/admin/bulk-verify', requireAdmin, (req, res) => {
-    const docs = aiPassedPending();
+    const docs = aiPassedPending(req);
     if (!docs.length) return flash(req, res, 'error', 'No AI-passed documents are waiting.');
     render(req, res, 'adminBulkVerify', { docs });
   });
@@ -339,7 +361,7 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
   app.post('/admin/bulk-verify', requireAdmin, checkCsrf, (req, res) => {
     // Only the documents the staff member saw on the confirmation page, and only if still AI-passed and pending.
     const shown = new Set(String(req.body.ids ?? '').split(',').filter(Boolean));
-    const docs = aiPassedPending().filter((d) => shown.has(d.id));
+    const docs = aiPassedPending(req).filter((d) => shown.has(d.id));
     const mark = db.prepare("UPDATE documents SET status = 'verified', review_note = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ? AND status = 'pending'");
     const note = 'Checked by AI and confirmed by college staff';
     for (const doc of docs) {
@@ -360,8 +382,15 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
     const missingOnly = req.query.missing === '1';
     const like = `%${q}%`;
     const inRequired = REQUIRED_KEYS.map(() => '?').join(', ');
+    // College office can narrow to one department (or students who haven't set one).
+    const deptFilter = isOffice(req) && (isDepartment(req.query.dept) || req.query.dept === 'none') ? req.query.dept : '';
+    const filters = [SCOPE];
+    const params = [...scope(req)];
+    if (q) { filters.push('(s.id LIKE ? OR s.name LIKE ? OR s.email LIKE ?)'); params.push(like, like, like); }
+    if (deptFilter === 'none') filters.push('s.department IS NULL');
+    else if (deptFilter) { filters.push('s.department = ?'); params.push(deptFilter); }
     const students = db.prepare(
-      `SELECT s.id, s.name, s.email, s.created_at,
+      `SELECT s.id, s.name, s.email, s.department, s.created_at,
               COUNT(d.id) AS total,
               COALESCE(SUM(d.status = 'verified'), 0) AS verified,
               COALESCE(SUM(d.status = 'pending'), 0) AS pending,
@@ -369,19 +398,19 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
               COUNT(DISTINCT CASE WHEN d.doc_type IN (${inRequired}) THEN d.doc_type END) AS required_done,
               MAX(d.uploaded_at) AS last_upload
        FROM students s LEFT JOIN documents d ON d.student_id = s.id
-       ${q ? 'WHERE s.id LIKE ? OR s.name LIKE ? OR s.email LIKE ?' : ''}
+       WHERE ${filters.join(' AND ')}
        GROUP BY s.id
        ${missingOnly ? 'HAVING required_done < ?' : ''}
        ORDER BY COALESCE(MAX(d.uploaded_at), s.created_at) DESC LIMIT 500`,
-    ).all(...REQUIRED_KEYS, ...(q ? [like, like, like] : []), ...(missingOnly ? [REQUIRED_KEYS.length] : []));
-    render(req, res, 'adminStudents', { students, q, missingOnly, requiredTotal: REQUIRED_KEYS.length, flash: takeFlash(req) });
+    ).all(...REQUIRED_KEYS, ...params, ...(missingOnly ? [REQUIRED_KEYS.length] : []));
+    render(req, res, 'adminStudents', { students, q, missingOnly, deptFilter, office: isOffice(req), requiredTotal: REQUIRED_KEYS.length, flash: takeFlash(req) });
   });
 
   app.post('/admin/students/:id/remind', requireAdmin, checkCsrf, (req, res) => {
-    const student = db.prepare('SELECT id, name, email FROM students WHERE id = ?').get(req.params.id);
+    const student = db.prepare(`SELECT s.id, s.name, s.email FROM students s WHERE s.id = ? AND ${SCOPE}`).get(req.params.id, ...scope(req));
     if (!student) return flash(req, res, 'error', 'Student not found.', '/admin/students');
     const back = `/admin/students/${student.id}`;
-    const docs = db.prepare('SELECT doc_type, status, ai_verdict FROM documents WHERE student_id = ?').all(student.id);
+    const docs = db.prepare('SELECT doc_type, title, status, ai_verdict FROM documents WHERE student_id = ?').all(student.id);
     const missing = buildChecklist(docs).missingRequired.map((i) => i.label);
     if (!missing.length) return flash(req, res, 'error', 'This student has uploaded every required document.', back);
     // At most one reminder per student per hour, so a double click doesn't spam them.
@@ -393,27 +422,38 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
     flash(req, res, 'success', `Reminder emailed to ${student.name} about: ${missing.join(', ')}.`, back);
   });
 
+  app.post('/admin/students/:id/department', requireAdmin, requireOffice, checkCsrf, (req, res) => {
+    const student = db.prepare('SELECT id, name, department FROM students WHERE id = ?').get(req.params.id);
+    if (!student) return flash(req, res, 'error', 'Student not found.', '/admin/students');
+    const department = String(req.body.department ?? '');
+    if (!isDepartment(department)) return flash(req, res, 'error', 'Choose a department.', `/admin/students/${student.id}`);
+    db.prepare('UPDATE students SET department = ? WHERE id = ?').run(department, student.id);
+    audit(req, student.id, 'department_changed', `${deptLabel(student.department)} -> ${deptLabel(department)} (by ${req.admin.name})`);
+    flash(req, res, 'success', `${student.name} is now in ${deptLabel(department)}.`, `/admin/students/${student.id}`);
+  });
+
   app.get('/admin/students/:id', requireAdmin, (req, res) => {
-    const student = db.prepare('SELECT id, name, email, created_at FROM students WHERE id = ?').get(req.params.id);
+    const student = db.prepare(`SELECT s.id, s.name, s.email, s.department, s.created_at FROM students s WHERE s.id = ? AND ${SCOPE}`)
+      .get(req.params.id, ...scope(req));
     if (!student) return flash(req, res, 'error', 'Student not found.', '/admin/students');
     const docs = db.prepare(
-      'SELECT id, doc_type, original_name, size, uploaded_at, status, review_note, reviewed_by, reviewed_at, ai_status, ai_verdict, ai_summary FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC',
+      'SELECT id, doc_type, title, original_name, size, uploaded_at, status, review_note, reviewed_by, reviewed_at, ai_status, ai_verdict, ai_summary FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC',
     ).all(student.id);
-    render(req, res, 'adminStudent', { student, docs, flash: takeFlash(req) });
+    render(req, res, 'adminStudent', { student, docs, office: isOffice(req), flash: takeFlash(req) });
   });
 
   // ---------- review one document ----------
 
   app.get('/admin/documents/:id', requireAdmin, (req, res) => {
-    const doc = findDoc(req.params.id);
+    const doc = findDoc(req, req.params.id);
     if (!doc) return flash(req, res, 'error', 'Document not found. The student may have deleted it.');
-    const pendingLeft = db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'pending'").get().n;
+    const pendingLeft = pendingCount(req);
     render(req, res, 'adminReview', { doc, pendingLeft, flash: takeFlash(req) });
   });
 
   // Opens the decrypted file in the browser so staff can check it. The student sees this in their activity log.
   app.get('/admin/documents/:id/file', requireAdmin, (req, res) => {
-    const doc = findDoc(req.params.id);
+    const doc = findDoc(req, req.params.id);
     if (!doc) return flash(req, res, 'error', 'Document not found.');
     let plain;
     try {
@@ -428,14 +468,14 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
   });
 
   app.post('/admin/documents/:id/review', requireAdmin, checkCsrf, (req, res) => {
-    const doc = findDoc(req.params.id);
+    const doc = findDoc(req, req.params.id);
     if (!doc) return flash(req, res, 'error', 'Document not found. The student may have deleted it.');
 
     const decision = String(req.body.decision ?? '');
     const note = String(req.body.note ?? '').trim().slice(0, 300);
     if (!['verified', 'rejected'].includes(decision)) return flash(req, res, 'error', 'Choose Verify or Reject.', `/admin/documents/${doc.id}`);
     if (decision === 'rejected' && !note) {
-      const pendingLeft = db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'pending'").get().n;
+      const pendingLeft = pendingCount(req);
       return render(req, res, 'adminReview', {
         doc, pendingLeft, errors: ['Please give a reason for rejecting, so the student knows what to fix.'],
       }, 400);
@@ -448,7 +488,9 @@ export function mountAdmin(app, { audit, checkCsrf, authLimiter, regenerateSessi
     sendReviewEmail({ email: doc.student_email, name: doc.student_name, docLabel: docLabel(doc), decision, note });
 
     // Straight on to the next document waiting for review, oldest first.
-    const next = db.prepare("SELECT id FROM documents WHERE status = 'pending' ORDER BY uploaded_at LIMIT 1").get();
+    const next = db.prepare(
+      `SELECT d.id FROM documents d JOIN students s ON s.id = d.student_id WHERE d.status = 'pending' AND ${SCOPE} ORDER BY d.uploaded_at LIMIT 1`,
+    ).get(...scope(req));
     const msg = `${docLabel(doc)} for ${doc.student_name} marked ${decision === 'verified' ? 'Verified' : 'Rejected'}.`;
     flash(req, res, 'success', next ? msg : `${msg} No more documents waiting for review.`, next ? `/admin/documents/${next.id}` : '/admin');
   });

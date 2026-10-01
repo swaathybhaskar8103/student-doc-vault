@@ -91,6 +91,11 @@ function addColumn(table, column, definition) {
 // Bumped on password change so every other logged-in session for that student stops working.
 addColumn('students', 'session_version', 'INTEGER NOT NULL DEFAULT 0');
 // College review: pending until staff mark it verified or rejected.
+// Departments: a student's department; a staff member's department, or 'ALL' (college office).
+// Existing staff become 'ALL' so they can still manage everything.
+addColumn('students', 'department', 'TEXT');
+addColumn('admins', 'department', "TEXT NOT NULL DEFAULT 'ALL'");
+addColumn('documents', 'title', 'TEXT'); // the student's own name for an "Other certificate"
 addColumn('documents', 'status', "TEXT NOT NULL DEFAULT 'pending'");
 addColumn('documents', 'review_note', 'TEXT');
 addColumn('documents', 'reviewed_by', 'TEXT');

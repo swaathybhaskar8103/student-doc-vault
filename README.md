@@ -84,6 +84,21 @@ Staff log in at `/admin/login` (linked at the bottom of the student login page) 
 Students see a status badge on each document, get an email for every decision, and see
 "Opened by college staff" in their activity log whenever staff open one of their files.
 
+## Departments
+
+Students choose their department when they register (they can't use DocVault until they have one).
+Staff accounts belong to one department and **only ever see that department's students and documents**;
+this is enforced in every database query, not just hidden on screen. **Admin** accounts (Office /
+Principal, department "All departments") see everyone, can filter by department, change a student's
+department, and add or remove staff. The list of departments is in `src/config.js` (`DEPARTMENTS`).
+
+## Other certificates
+
+Besides the fixed document types, students can upload any number of **Other certificates**
+(hackathons, courses, sports, NSS…), giving each one a name. The automatic check makes sure each is
+really a certificate (an ID card or a mark sheet uploaded as "Other" is rejected), that the name the
+student typed matches what's printed on it, and that it carries the student's own name.
+
 ## AI document check (runs on your own server)
 
 Every upload gets a first-pass check from a vision AI model running **locally** in

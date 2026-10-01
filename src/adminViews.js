@@ -1,8 +1,8 @@
-import { DOC_TYPES } from './config.js';
-import { layout, esc, fmtSize, fmtTime, csrfField, errorBox, flashBox, statusBadge, aiBadge, checklistPanel } from './views.js';
+import { DOC_TYPES, documentLabel, DEPARTMENTS, deptLabel } from './config.js';
+import { layout, esc, fmtSize, fmtTime, csrfField, errorBox, flashBox, statusBadge, aiBadge, checklistPanel, departmentOptions } from './views.js';
 import { buildChecklist } from './checklist.js';
 
-const docLabel = (d) => esc(DOC_TYPES[d.doc_type] ?? d.doc_type);
+const docLabel = (d) => esc(documentLabel(d));
 
 export const adminLogin = ({ errors, values = {}, ...ctx }) =>
   layout(
@@ -67,13 +67,14 @@ export const adminQueue = ({ docs, status, q, counts, studentCount, aiPassedCoun
   );
 };
 
-export const adminStudents = ({ students, q, missingOnly, requiredTotal, flash, ...ctx }) => {
+export const adminStudents = ({ students, q, missingOnly, deptFilter, office, requiredTotal, flash, ...ctx }) => {
   const rows = students.length
     ? students.map((s, i) => `<tr>
         <td data-label="S.No" class="sno">${i + 1}</td>
         <td data-label="Student ID"><a href="/admin/students/${esc(s.id)}"><code>${esc(s.id)}</code></a></td>
         <td data-label="Name"><a href="/admin/students/${esc(s.id)}">${esc(s.name)}</a></td>
         <td data-label="Email" class="filename">${esc(s.email)}</td>
+        <td data-label="Dept">${s.department ? esc(s.department) : '<span class="sub">Not set</span>'}</td>
         <td data-label="Uploaded">${s.total}</td>
         <td data-label="Required"><span class="badge ${s.required_done >= requiredTotal ? 'verified' : 'pending'}">${s.required_done}/${requiredTotal}</span></td>
         <td data-label="Status">
@@ -84,20 +85,23 @@ export const adminStudents = ({ students, q, missingOnly, requiredTotal, flash, 
         </td>
         <td data-label="Last uploaded">${s.last_upload ? fmtTime(s.last_upload) : '<span class="sub">Never</span>'}</td>
       </tr>`).join('')
-    : `<tr><td colspan="8" class="empty">${missingOnly ? 'Every student has uploaded all required documents.' : 'No students found.'}</td></tr>`;
+    : `<tr><td colspan="9" class="empty">${missingOnly ? 'Every student has uploaded all required documents.' : 'No students found.'}</td></tr>`;
+  const keep = (extra) => { const p = new URLSearchParams(); if (q) p.set('q', q); if (deptFilter) p.set('dept', deptFilter); for (const [k, v] of Object.entries(extra)) p.set(k, v); const str = p.toString(); return str ? `?${str}` : ''; };
 
   return layout(
     { ...ctx, title: 'Students' },
     `${flashBox(flash)}
     <section class="card wide">
       <h1>Students <span class="count">${students.length}</span></h1>
+      <p class="muted">${office ? 'Admin: you can see students of every department.' : `Showing only ${esc(deptLabel(ctx.admin.department))} students.`}</p>
       <div class="toolbar">
         <nav class="tabs">
-          <a class="tab ${missingOnly ? '' : 'active'}" href="/admin/students${q ? `?q=${esc(encodeURIComponent(q))}` : ''}">All</a>
-          <a class="tab ${missingOnly ? 'active' : ''}" href="/admin/students?missing=1${q ? `&amp;q=${esc(encodeURIComponent(q))}` : ''}">Missing required documents</a>
+          <a class="tab ${missingOnly ? '' : 'active'}" href="/admin/students${esc(keep({}))}">All</a>
+          <a class="tab ${missingOnly ? 'active' : ''}" href="/admin/students${esc(keep({ missing: '1' }))}">Missing required documents</a>
         </nav>
         <form method="get" action="/admin/students" class="search">
           ${missingOnly ? '<input type="hidden" name="missing" value="1">' : ''}
+          ${office ? `<select name="dept" aria-label="Department"><option value="">All departments</option>${DEPARTMENTS.map((d) => `<option value="${esc(d.key)}"${d.key === deptFilter ? ' selected' : ''}>${esc(d.key)}</option>`).join('')}<option value="none"${deptFilter === 'none' ? ' selected' : ''}>Not set</option></select>` : ''}
           <input type="search" name="q" placeholder="Search name, ID or email" value="${esc(q)}">
           <button class="btn small">Search</button>
         </form>
@@ -105,7 +109,7 @@ export const adminStudents = ({ students, q, missingOnly, requiredTotal, flash, 
       <p class="hint">Most recently active students first. Click a Student ID or name to see their documents.</p>
       <div class="table-scroll">
         <table class="docs students-table">
-          <thead><tr><th>S.No</th><th>Student ID</th><th>Name</th><th>Email</th><th>Uploaded</th><th>Required</th><th>Status</th><th>Last uploaded</th></tr></thead>
+          <thead><tr><th>S.No</th><th>Student ID</th><th>Name</th><th>Email</th><th>Dept</th><th>Uploaded</th><th>Required</th><th>Status</th><th>Last uploaded</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -113,7 +117,7 @@ export const adminStudents = ({ students, q, missingOnly, requiredTotal, flash, 
   );
 };
 
-export const adminStudent = ({ student, docs, flash, ...ctx }) => {
+export const adminStudent = ({ student, docs, office, flash, ...ctx }) => {
   const missing = buildChecklist(docs).missingRequired;
   const rows = docs.length
     ? docs.map((d) => `<tr>
@@ -134,8 +138,14 @@ export const adminStudent = ({ student, docs, flash, ...ctx }) => {
       <dl class="doc-summary">
         <dt>Student ID</dt><dd><code>${esc(student.id)}</code></dd>
         <dt>Email</dt><dd>${esc(student.email)}</dd>
+        <dt>Department</dt><dd>${esc(deptLabel(student.department))}</dd>
         <dt>Registered</dt><dd>${fmtTime(student.created_at)}</dd>
       </dl>
+      ${office ? `<form method="post" action="/admin/students/${esc(student.id)}/department" class="inline-form">
+        ${csrfField(ctx.csrf)}
+        <label>Change department <select name="department" required>${departmentOptions(student.department)}</select></label>
+        <button class="btn small secondary">Save</button>
+      </form>` : ''}
       <table class="docs">
         <thead><tr><th>Type</th><th>File</th><th>Uploaded</th><th>Status</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
@@ -205,6 +215,7 @@ export const adminReview = ({ doc, pendingLeft, errors, flash, ...ctx }) =>
       <dl class="doc-summary">
         <dt>Student</dt><dd><a href="/admin/students/${esc(doc.student_id)}">${esc(doc.student_name)}</a> · <code>${esc(doc.student_id)}</code></dd>
         <dt>Email</dt><dd>${esc(doc.student_email)}</dd>
+        <dt>Department</dt><dd>${esc(deptLabel(doc.student_department))}</dd>
         <dt>File</dt><dd class="filename">${esc(doc.original_name)} (${fmtSize(doc.size)})</dd>
         <dt>Uploaded</dt><dd>${fmtTime(doc.uploaded_at)}</dd>
         ${doc.reviewed_by ? `<dt>Last review</dt><dd>${statusBadge(doc.status)} by ${esc(doc.reviewed_by)}, ${fmtTime(doc.reviewed_at)}${doc.review_note ? `<div class="review-note">${esc(doc.review_note)}</div>` : ''}</dd>` : ''}
@@ -255,6 +266,7 @@ export const adminStaff = ({ staff, addErrors, values = {}, flash, ...ctx }) => 
   const rows = staff.map((s) => `<tr>
       <td data-label="Name">${esc(s.name)}${s.id === ctx.admin.id ? ' <span class="badge verified">You</span>' : ''}</td>
       <td data-label="Email" class="filename">${esc(s.email)}</td>
+      <td data-label="Department">${esc(deptLabel(s.department))}</td>
       <td data-label="Added">${fmtTime(s.created_at)}</td>
       <td class="row-actions">${s.id === ctx.admin.id ? '' : `
         <form method="post" action="/admin/staff/${esc(s.id)}/delete">
@@ -268,7 +280,7 @@ export const adminStaff = ({ staff, addErrors, values = {}, flash, ...ctx }) => 
     <section class="card">
       <h1>Staff accounts <span class="count">${staff.length}</span></h1>
       <table class="docs">
-        <thead><tr><th>Name</th><th>Email</th><th>Added</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Added</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </section>
@@ -280,13 +292,15 @@ export const adminStaff = ({ staff, addErrors, values = {}, flash, ...ctx }) => 
         ${csrfField(ctx.csrf)}
         <label>Name <input name="name" required maxlength="100" value="${esc(values.name)}"></label>
         <label>Email <input type="email" name="email" required maxlength="200" autocomplete="off" value="${esc(values.email)}"></label>
+        <label>Department <select name="department" required><option value="" ${values.department ? '' : 'selected'} disabled>Choose…</option>${departmentOptions(values.department, { includeAll: true })}</select></label>
+        <span></span>
         <label>Password <input type="password" name="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>
         <label>Confirm password <input type="password" name="confirm" required minlength="12" maxlength="128" autocomplete="new-password"></label>
         <button class="btn">Add staff member</button>
       </form>
-      <p class="hint">Tell them the password in person. Staff can verify and reject every student's documents,
-        so only add people from the college office.</p>
-    </section>    </section>`,
+      <p class="hint">Department staff only see students of their own department. Choose "Admin" for the Office or
+        Principal: they see every department and can add or remove staff. Tell them the password in person.</p>
+    </section>`,
   );
 };
 
@@ -318,6 +332,7 @@ export const adminAccount = ({ mustChange, errors, detailErrors, values = {}, fl
         ${csrfField(ctx.csrf)}
         <label>Name (shown to students on reviews) <input name="name" required maxlength="100" value="${esc(values.name ?? ctx.admin.name)}"></label>
         <label>Email (used to log in) <input type="email" name="email" required maxlength="200" autocomplete="username" value="${esc(values.email ?? ctx.admin.email)}"></label>
+        <p class="muted">Department: <strong>${esc(deptLabel(ctx.admin.department))}</strong> (set by an admin)</p>
         <label>Current password <span class="sub">(only needed to change your email)</span>
           <input type="password" name="current" maxlength="128" autocomplete="current-password"></label>
         <button class="btn">Save details</button>

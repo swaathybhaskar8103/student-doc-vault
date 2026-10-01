@@ -240,3 +240,19 @@ main:has(.card.wide) { max-width: 1200px; }
 .students-table td, .students-table th { white-space: nowrap; }
 .students-table td.filename { white-space: normal; }
 @media (max-width: 640px) { .students-table td, .students-table th { white-space: normal; } .menu-name { display: none; } }
+.dept-ask { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; border-color: var(--accent); }
+.dept-ask label { margin: 0; flex: 1 1 260px; }
+.dept-ask .hint { flex-basis: 100%; margin: 0; }
+.inline-form { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin: 4px 0 16px; } .inline-form label { margin: 0; }
+.search select { width: auto; margin: 0; }
+.upload { grid-template-columns: 1fr 1fr 1fr auto; }
+@media (max-width: 860px) { .upload { grid-template-columns: 1fr; } }
+
+/* "Certificate name" only appears when "Other certificate" is chosen (pure CSS, no JavaScript). */
+.upload { grid-template-columns: 1fr 1fr auto; }
+.upload .title-field { display: none; }
+.upload:has(select option[value="other"]:checked) { grid-template-columns: 1fr 1fr 1fr auto; }
+.upload:has(select option[value="other"]:checked) .title-field { display: block; }
+@media (max-width: 860px) {
+  .upload, .upload:has(select option[value="other"]:checked) { grid-template-columns: 1fr; }
+}

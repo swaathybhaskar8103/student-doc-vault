@@ -14,7 +14,7 @@ import {
   encryptFile, decryptFile, sniffFileType, randomStudentId, randomResetCode, hashResetCode,
 } from './src/security.js';
 import {
-  DOC_TYPES, isUploadable, docInfo, canReplace, MAX_FILE_BYTES, MAX_DOCS_PER_STUDENT, LOCK_AFTER_FAILS, LOCK_MINUTES, SESSION_MINUTES,
+  DOC_TYPES, documentLabel, isUploadable, docInfo, canReplace, isDepartment, deptLabel, MAX_FILE_BYTES, MAX_DOCS_PER_STUDENT, LOCK_AFTER_FAILS, LOCK_MINUTES, SESSION_MINUTES,
 } from './src/config.js';
 import * as views from './src/views.js';
 import { isUnlocked, unlock, keyFileExists, keyFromEnv } from './src/keyVault.js';
@@ -68,13 +68,13 @@ app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store');
   req.session.csrf ??= crypto.randomBytes(32).toString('hex');
   if (req.session.studentId) {
-    const student = db.prepare('SELECT id, name, session_version FROM students WHERE id = ?').get(req.session.studentId);
+    const student = db.prepare('SELECT id, name, department, session_version FROM students WHERE id = ?').get(req.session.studentId);
     // Password was changed elsewhere since this session logged in: treat it as logged out.
     if (student && student.session_version === req.session.sessionVersion) req.student = student;
     else delete req.session.studentId;
   }
   if (req.session.adminId) {
-    const admin = db.prepare('SELECT id, name, email, session_version FROM admins WHERE id = ?').get(req.session.adminId);
+    const admin = db.prepare('SELECT id, name, email, department, session_version FROM admins WHERE id = ?').get(req.session.adminId);
     if (admin && admin.session_version === req.session.adminSessionVersion) req.admin = admin;
     else delete req.session.adminId;
   }
@@ -109,6 +109,8 @@ const regenerateSession = (req) =>
 
 function requireAuth(req, res, next) {
   if (!req.student) return res.redirect('/login');
+  // A student must choose their department before using anything else.
+  if (!req.student.department && req.path !== '/account/department') return res.redirect('/account/department');
   next();
 }
 
@@ -193,20 +195,22 @@ app.post('/register', authLimiter, checkCsrf, async (req, res) => {
   const email = String(req.body.email ?? '').trim().toLowerCase();
   const password = String(req.body.password ?? '');
   const confirm = String(req.body.confirm ?? '');
+  const department = String(req.body.department ?? '');
 
   const errors = [];
   if (name.length < 2 || name.length > 100) errors.push('Please enter your full name.');
+  if (!isDepartment(department)) errors.push('Please choose your department.');
   if (email.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Please enter a valid email address.');
   if (password.length < 8 || password.length > 128) errors.push('Password must be 8 to 128 characters.');
   else if (password !== confirm) errors.push('The two passwords do not match.');
   if (!errors.length && db.prepare('SELECT 1 FROM students WHERE email = ?').get(email)) {
     errors.push('An account with this email already exists. Please log in instead.');
   }
-  if (errors.length) return render(req, res, 'register', { errors, values: { name, email } }, 400);
+  if (errors.length) return render(req, res, 'register', { errors, values: { name, email, department } }, 400);
 
   const id = newStudentId();
-  db.prepare('INSERT INTO students (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, name, email, await hashPassword(password), Date.now());
+  db.prepare('INSERT INTO students (id, name, email, department, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, name, email, department, await hashPassword(password), Date.now());
 
   await regenerateSession(req); // fresh session id on privilege change
   req.session.studentId = id;
@@ -448,7 +452,7 @@ app.post('/account/password', requireAuth, authLimiter, checkCsrf, async (req, r
 
 app.get('/dashboard', requireAuth, (req, res) => {
   const docs = db.prepare(
-    'SELECT id, doc_type, original_name, size, uploaded_at, status, review_note, ai_status, ai_verdict, ai_summary FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC',
+    'SELECT id, doc_type, title, original_name, size, uploaded_at, status, review_note, ai_status, ai_verdict, ai_summary FROM documents WHERE student_id = ? ORDER BY uploaded_at DESC',
   ).all(req.student.id);
   const activity = db.prepare(
     'SELECT action, detail, ip, at FROM audit_log WHERE student_id = ? ORDER BY at DESC, id DESC LIMIT 15',
@@ -458,8 +462,21 @@ app.get('/dashboard', requireAuth, (req, res) => {
   render(req, res, 'dashboard', { docs, activity, flash: f, aiEnabled: AI_ENABLED, aiAuto: AI_AUTO_DECISION });
 });
 
+// Accounts made before departments existed choose theirs once; after that only the college office can change it.
+app.get('/account/department', requireAuth, (req, res) =>
+  (req.student.department ? res.redirect('/dashboard') : render(req, res, 'chooseDepartment')));
+
+app.post('/account/department', requireAuth, checkCsrf, (req, res) => {
+  if (req.student.department) return flash(req, res, 'error', 'Your department is already set. Ask the college office to change it.');
+  const department = String(req.body.department ?? '');
+  if (!isDepartment(department)) return render(req, res, 'chooseDepartment', { errors: ['Please choose your department.'] }, 400);
+  db.prepare('UPDATE students SET department = ? WHERE id = ? AND department IS NULL').run(department, req.student.id);
+  audit(req, req.student.id, 'department_set', deptLabel(department));
+  flash(req, res, 'success', `Department saved: ${deptLabel(department)}.`);
+});
+
 app.get('/done', requireAuth, (req, res) => {
-  const docs = db.prepare('SELECT doc_type FROM documents WHERE student_id = ? ORDER BY uploaded_at').all(req.student.id);
+  const docs = db.prepare('SELECT doc_type, title FROM documents WHERE student_id = ? ORDER BY uploaded_at').all(req.student.id);
   if (!docs.length) return res.redirect('/dashboard');
   render(req, res, 'done', { docs });
 });
@@ -469,6 +486,9 @@ app.get('/done', requireAuth, (req, res) => {
 app.post('/documents', requireAuth, uploadLimiter, upload.single('file'), checkCsrf, (req, res) => {
   const docType = String(req.body.doc_type ?? '');
   if (!isUploadable(docType)) return flash(req, res, 'error', 'Please choose a document type.');
+  // "Other certificate" needs a name from the student; other types ignore the field.
+  const title = docInfo(docType).named ? String(req.body.title ?? '').trim().replace(/\s+/g, ' ').slice(0, 80) : null;
+  if (docInfo(docType).named && title.length < 2) return flash(req, res, 'error', 'For "Other certificate", type a name for it (e.g. Hackathon winner 2025).');
   if (!docInfo(docType).multiple && db.prepare('SELECT 1 FROM documents WHERE student_id = ? AND doc_type = ?').get(req.student.id, docType)) {
     return flash(req, res, 'error', `You already uploaded your ${DOC_TYPES[docType]}. To change it, delete the old one first.`);
   }
@@ -490,16 +510,17 @@ app.post('/documents', requireAuth, uploadLimiter, upload.single('file'), checkC
   fs.writeFileSync(filePath, data, { mode: 0o600 });
   try {
     db.prepare(
-      `INSERT INTO documents (id, student_id, doc_type, original_name, mime_type, size, iv, auth_tag, uploaded_at, ai_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(docId, req.student.id, docType, name, kind.mime, req.file.size, iv, tag, Date.now(), initialAiStatus());
+      `INSERT INTO documents (id, student_id, doc_type, title, original_name, mime_type, size, iv, auth_tag, uploaded_at, ai_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(docId, req.student.id, docType, title, name, kind.mime, req.file.size, iv, tag, Date.now(), initialAiStatus());
   } catch (err) {
     fs.rmSync(filePath, { force: true });
     throw err;
   }
 
-  audit(req, req.student.id, 'upload', `${DOC_TYPES[docType]} (${name})`);
-  flash(req, res, 'success', `${DOC_TYPES[docType]} uploaded and encrypted.`);
+  const label = documentLabel({ doc_type: docType, title });
+  audit(req, req.student.id, 'upload', `${label} (${name})`);
+  flash(req, res, 'success', `${label} uploaded and encrypted.`);
 });
 
 // Ownership is enforced in the query itself: a student can only ever load rows with their own id.
@@ -532,9 +553,9 @@ app.post('/documents/:id/replace', requireAuth, uploadLimiter, upload.single('fi
   try {
     db.exec('BEGIN');
     db.prepare(
-      `INSERT INTO documents (id, student_id, doc_type, original_name, mime_type, size, iv, auth_tag, uploaded_at, ai_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(docId, req.student.id, old.doc_type, name, kind.mime, req.file.size, iv, tag, Date.now(), initialAiStatus());
+      `INSERT INTO documents (id, student_id, doc_type, title, original_name, mime_type, size, iv, auth_tag, uploaded_at, ai_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(docId, req.student.id, old.doc_type, old.title, name, kind.mime, req.file.size, iv, tag, Date.now(), initialAiStatus());
     db.prepare('DELETE FROM documents WHERE id = ?').run(old.id);
     db.exec('COMMIT');
   } catch (err) {
@@ -544,7 +565,7 @@ app.post('/documents/:id/replace', requireAuth, uploadLimiter, upload.single('fi
   }
   fs.rmSync(path.join(FILES_DIR, `${old.id}.enc`), { force: true });
 
-  const label = DOC_TYPES[old.doc_type] ?? old.doc_type;
+  const label = documentLabel(old);
   audit(req, req.student.id, 'reupload', `${label} (${name})`);
   flash(req, res, 'success', `New copy of your ${label} uploaded. The college will review it again.`);
 });
@@ -563,7 +584,7 @@ app.get('/documents/:id/download', requireAuth, (req, res) => {
     }, 500);
   }
 
-  audit(req, req.student.id, 'download', `${DOC_TYPES[doc.doc_type] ?? doc.doc_type} (${doc.original_name})`);
+  audit(req, req.student.id, 'download', `${documentLabel(doc)} (${doc.original_name})`);
   res.attachment(doc.original_name).type(doc.mime_type).send(plain);
 });
 
@@ -578,7 +599,7 @@ app.post('/documents/:id/delete', requireAuth, checkCsrf, (req, res) => {
   if (!doc) return flash(req, res, 'error', 'Document not found.');
   db.prepare('DELETE FROM documents WHERE id = ?').run(doc.id);
   fs.rmSync(path.join(FILES_DIR, `${doc.id}.enc`), { force: true });
-  audit(req, req.student.id, 'delete', `${DOC_TYPES[doc.doc_type] ?? doc.doc_type} (${doc.original_name})`);
+  audit(req, req.student.id, 'delete', `${documentLabel(doc)} (${doc.original_name})`);
   flash(req, res, 'success', 'Document deleted.');
 });
 

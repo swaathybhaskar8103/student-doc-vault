@@ -1,4 +1,4 @@
-import { DOC_TYPES, UPLOADABLE_TYPES, MAX_DOCS_PER_STUDENT, canReplace } from './config.js';
+import { DOC_TYPES, documentLabel, UPLOADABLE_TYPES, MAX_DOCS_PER_STUDENT, canReplace, DEPARTMENTS, deptLabel } from './config.js';
 import { buildChecklist } from './checklist.js';
 
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -33,18 +33,25 @@ const ACTIVITY_LABELS = {
   verified: 'Verified by college',
   rejected: 'Rejected by college',
   reupload: 'Uploaded a new copy for review',
-  ai_verified: 'Verified by AI check',
-  ai_rejected: 'Rejected by AI check',
+  ai_verified: 'Verified automatically',
+  ai_rejected: 'Not accepted by the automatic check',
   reminder_sent: 'College sent a reminder about missing documents',
+  department_set: 'Department set',
+  department_changed: 'Department changed by the college office',
 };
 
 const STATUS_LABELS = { pending: 'Pending review', verified: 'Verified', rejected: 'Rejected' };
-const AI_VERDICT_LABELS = { ok: 'AI: looks good', warn: 'AI: needs a look', fail: 'AI: problem found' };
-export function aiBadge(doc) {
+// Staff see "AI: …"; students just see the check's result, without mentioning AI.
+const CHECK_LABELS = {
+  staff: { checking: 'AI checking…', error: 'AI could not check', ok: 'AI: looks good', warn: 'AI: needs a look', fail: 'AI: problem found' },
+  student: { checking: 'Checking…', error: 'Could not check', ok: 'Looks good', warn: 'Needs a look', fail: 'Problem found' },
+};
+export function aiBadge(doc, { forStudent = false } = {}) {
   if (!doc.ai_status) return '';
-  if (doc.ai_status === 'queued' || doc.ai_status === 'checking') return '<span class="ai-badge checking">AI checking…</span>';
-  if (doc.ai_status === 'error') return '<span class="ai-badge error">AI could not check</span>';
-  return `<span class="ai-badge ${esc(doc.ai_verdict)}">${esc(AI_VERDICT_LABELS[doc.ai_verdict] ?? doc.ai_verdict)}</span>`;
+  const labels = CHECK_LABELS[forStudent ? 'student' : 'staff'];
+  if (doc.ai_status === 'queued' || doc.ai_status === 'checking') return `<span class="ai-badge checking">${labels.checking}</span>`;
+  if (doc.ai_status === 'error') return `<span class="ai-badge error">${labels.error}</span>`;
+  return `<span class="ai-badge ${esc(doc.ai_verdict)}">${esc(labels[doc.ai_verdict] ?? doc.ai_verdict)}</span>`;
 }
 
 // Small inline SVG status icons (no emoji, no external files). Colours come from CSS.
@@ -77,8 +84,8 @@ export function checklistPanel(docs, { forStaff = false } = {}) {
     <div class="cl-columns">
       <div><h3>Required</h3><ul class="cl-list">${cl.required.map(row).join('')}</ul></div>
       <div><h3>If applicable</h3><ul class="cl-list">${cl.ifApplicable.map(row).join('')}</ul>
-        <h3>Hackathon / achievements</h3>
-        <p class="cl-count">${achievements ? `${achievements} certificate${achievements === 1 ? '' : 's'} uploaded` : `None yet${forStaff ? '' : '. Add as many as you like.'}`}</p></div>
+        <h3>Other certificates</h3>
+        <p class="cl-count">${achievements ? `${achievements} uploaded: ${cl.achievements.flatMap((i) => i.docs).map((d) => esc(d.title || 'untitled')).join(', ')}` : `None yet${forStaff ? '' : '. Add as many as you like (hackathons, courses, sports…).'}`}</p></div>
     </div>
     <h3>Semester results</h3>
     <div class="chips">${cl.semesters.map((i, n) => chip(i, n + 1)).join('')}</div>
@@ -104,8 +111,8 @@ export function layout({ title, csrf, student, admin, refreshSeconds }, body) {
     ? `<nav>
          <a href="/admin/students">Students</a>
          <a href="/admin">Review queue</a>
-         <a href="/admin/staff">Staff</a>
-         ${menu(admin.name, `College staff · ${esc(admin.email)}`, [
+         ${admin.department === 'ALL' ? '<a href="/admin/staff">Staff</a>' : ''}
+         ${menu(admin.name, `${esc(deptLabel(admin.department))} · ${esc(admin.email)}`, [
            ['/admin/account#details', 'Account details'],
            ['/admin/account#password', 'Change password'],
          ], '/admin/logout')}
@@ -113,7 +120,7 @@ export function layout({ title, csrf, student, admin, refreshSeconds }, body) {
     : student
     ? `<nav>
          <a href="/dashboard">My documents</a>
-         ${menu(student.name, `Student ID <code>${esc(student.id)}</code>`, [
+         ${menu(student.name, `Student ID <code>${esc(student.id)}</code>${student.department ? ` · ${esc(student.department)}` : ''}`, [
            ['/account/password', 'Change password'],
            ['/account/delete', 'Delete my account'],
          ], '/logout')}
@@ -155,6 +162,10 @@ export const home = (ctx) =>
     </section>`,
   );
 
+export const departmentOptions = (selected, { includeAll = false } = {}) =>
+  `${includeAll ? `<option value="ALL"${selected === 'ALL' ? ' selected' : ''}>Admin: all departments (Office / Principal)</option>` : ''}${
+    DEPARTMENTS.map((d) => `<option value="${esc(d.key)}"${d.key === selected ? ' selected' : ''}>${esc(d.label)}</option>`).join('')}`;
+
 export const register = ({ errors, values = {}, ...ctx }) =>
   layout(
     { ...ctx, title: 'Create account' },
@@ -165,6 +176,7 @@ export const register = ({ errors, values = {}, ...ctx }) =>
         ${csrfField(ctx.csrf)}
         <label>Full name <input name="name" required maxlength="100" autocomplete="name" value="${esc(values.name)}"></label>
         <label>Email <input type="email" name="email" required maxlength="200" autocomplete="email" value="${esc(values.email)}"></label>
+        <label>Department <select name="department" required><option value="" ${values.department ? '' : 'selected'} disabled>Choose your department…</option>${departmentOptions(values.department)}</select></label>
         <label>Password <input type="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
         <label>Confirm password <input type="password" name="confirm" required minlength="8" maxlength="128" autocomplete="new-password"></label>
         <p class="hint">At least 8 characters. Don't reuse your email or social media password.</p>
@@ -218,12 +230,12 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
     ? docs
         .map(
           (d) => `<tr>
-            <td data-label="Type">${esc(DOC_TYPES[d.doc_type] ?? d.doc_type)}</td>
+            <td data-label="Type">${esc(documentLabel(d))}</td>
             <td data-label="File" class="filename">${esc(d.original_name)}</td>
             <td data-label="Size">${fmtSize(d.size)}</td>
             <td data-label="Uploaded">${fmtTime(d.uploaded_at)}</td>
-            <td data-label="Status">${statusBadge(d.status)}${d.status === 'pending' ? aiBadge(d) : ''}${
-              canReplace(d) && problemNote(d) ? `<div class="review-note">${d.status === 'rejected' ? 'Reason' : 'AI'}: ${esc(problemNote(d))}</div>` : ''
+            <td data-label="Status">${statusBadge(d.status)}${d.status === 'pending' ? aiBadge(d, { forStudent: true }) : ''}${
+              canReplace(d) && problemNote(d) ? `<div class="review-note">${d.status === 'rejected' ? 'Reason' : 'Check'}: ${esc(problemNote(d))}</div>` : ''
             }</td>
             <td class="row-actions">
               ${canReplace(d) ? `<a class="btn small warn-btn" href="/documents/${esc(d.id)}/replace">Upload new copy</a>` : ''}
@@ -239,7 +251,7 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
   const typeOptions = UPLOADABLE_TYPES
     .map((t) => (!t.multiple && uploaded.has(t.key)
       ? `<option value="${t.key}" disabled>${esc(t.label)} (uploaded)</option>`
-      : `<option value="${t.key}">${esc(t.label)}${t.multiple ? ' (you can add several)' : ''}</option>`))
+      : `<option value="${t.key}">${esc(t.label)}</option>`))
     .join('');
 
   const log = activity
@@ -257,7 +269,7 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
     ${rejected.length ? `<div class="alert error attention">
       <p><strong>${rejected.length} document${rejected.length === 1 ? ' needs' : 's need'} your attention.</strong>
         Please fix:</p>
-      <ul>${rejected.map((d) => `<li><strong>${esc(DOC_TYPES[d.doc_type] ?? d.doc_type)}</strong>${problemNote(d) ? `: ${esc(problemNote(d))}` : ''}
+      <ul>${rejected.map((d) => `<li><strong>${esc(documentLabel(d))}</strong>${problemNote(d) ? `: ${esc(problemNote(d))}` : ''}
         · <a href="/documents/${esc(d.id)}/replace">Upload new copy</a></li>`).join('')}</ul>
     </div>` : ''}
     ${checklistPanel(docs)}
@@ -275,15 +287,19 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
       <form method="post" action="/documents" enctype="multipart/form-data" class="upload">
         ${csrfField(ctx.csrf)}
         <label>Document type <select name="doc_type" required><option value="" selected disabled>Choose type…</option>${typeOptions}</select></label>
+        <label class="title-field">Certificate name
+          <input name="title" maxlength="80" placeholder="e.g. Hackathon winner 2025"></label>
         <label>File <input type="file" name="file" required accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"></label>
         <button class="btn">Upload securely</button>
       </form>
+      <p class="hint">Have more certificates (hackathons, courses, sports, NSS…)? Choose <strong>Other certificate</strong>,
+        type its name, and upload. Repeat for each one.</p>
       <p class="hint">PDF, JPG or PNG, up to 5 MB. Scan or photograph the whole document so every detail is clear.</p>
-      ${aiEnabled ? `<p class="hint">After upload, the college's own AI (running on the college server, never sent outside)
-        checks that the file is readable, is the type you chose, and shows your name. ${aiAuto
+      ${aiEnabled ? `<p class="hint">After upload, DocVault checks that the file is readable, is the type you chose,
+        and shows your name. Your documents never leave the college. ${aiAuto
           ? 'Documents that pass are verified straight away; if there is a problem you will see why and can upload a new copy.'
           : 'College staff make the final decision.'}</p>` : ''}
-      ${checking ? '<p class="hint"><strong>AI check in progress.</strong> This page refreshes by itself.</p>' : ''}
+      ${checking ? '<p class="hint"><strong>Checking your document.</strong> This page refreshes by itself.</p>' : ''}
     </section>
 
     <details class="card activity-card">
@@ -302,7 +318,7 @@ export const done = ({ docs, ...ctx }) =>
       <h1>Thank you for uploading!</h1>
       <p>Your ${docs.length} document${docs.length === 1 ? ' is' : 's are'} encrypted and stored safely.</p>
       <ul class="done-list">
-        ${docs.map((d) => `<li>${esc(DOC_TYPES[d.doc_type] ?? d.doc_type)}</li>`).join('')}
+        ${docs.map((d) => `<li>${esc(documentLabel(d))}</li>`).join('')}
       </ul>
       <p>Whenever you need a soft copy, log in with your Student ID (or email) and password.</p>
       <div class="student-id">${esc(ctx.student.id)}</div>
@@ -432,7 +448,7 @@ export const confirmDelete = ({ doc, ...ctx }) =>
     `<div class="card narrow">
       <h1>Delete this document?</h1>
       <dl class="doc-summary">
-        <dt>Type</dt><dd>${esc(DOC_TYPES[doc.doc_type] ?? doc.doc_type)}</dd>
+        <dt>Type</dt><dd>${esc(documentLabel(doc))}</dd>
         <dt>File</dt><dd class="filename">${esc(doc.original_name)}</dd>
         <dt>Size</dt><dd>${fmtSize(doc.size)}</dd>
         <dt>Uploaded</dt><dd>${fmtTime(doc.uploaded_at)}</dd>
@@ -454,12 +470,12 @@ export const replaceDocument = ({ doc, errors, ...ctx }) =>
     `<div class="card narrow">
       <h1>Upload a new copy</h1>
       <dl class="doc-summary">
-        <dt>Document</dt><dd>${esc(DOC_TYPES[doc.doc_type] ?? doc.doc_type)}</dd>
+        <dt>Document</dt><dd>${esc(documentLabel(doc))}</dd>
         <dt>Current file</dt><dd class="filename">${esc(doc.original_name)}</dd>
         <dt>Status</dt><dd>${statusBadge(doc.status)}</dd>
       </dl>
       ${doc.status === 'rejected' && doc.review_note ? `<div class="alert error"><p><strong>Why it was rejected:</strong> ${esc(doc.review_note)}</p></div>` : ''}
-      ${doc.status !== 'rejected' && doc.ai_summary ? `<div class="alert error"><p><strong>What the AI check found:</strong> ${esc(doc.ai_summary)}</p></div>` : ''}
+      ${doc.status !== 'rejected' && doc.ai_summary ? `<div class="alert error"><p><strong>What the check found:</strong> ${esc(doc.ai_summary)}</p></div>` : ''}
       ${errorBox(errors)}
       <form method="post" action="/documents/${esc(doc.id)}/replace" enctype="multipart/form-data">
         ${csrfField(ctx.csrf)}
@@ -496,6 +512,23 @@ export const unlockPage = ({ errors, ...ctx }) =>
         ${csrfField(ctx.csrf)}
         <label>Unlock passphrase <input type="password" name="passphrase" required maxlength="200" autocomplete="off" autofocus></label>
         <button class="btn">Unlock</button>
+      </form>
+    </div>`,
+  );
+
+export const chooseDepartment = ({ errors, ...ctx }) =>
+  layout(
+    { ...ctx, title: 'Choose your department' },
+    `<div class="card narrow">
+      <h1>Choose your department</h1>
+      <p class="muted">Before you can use DocVault, tell us your department. Only your department's staff
+        (and the college office) will see your documents.</p>
+      ${errorBox(errors)}
+      <form method="post" action="/account/department">
+        ${csrfField(ctx.csrf)}
+        <label>Department <select name="department" required><option value="" selected disabled>Choose your department…</option>${departmentOptions()}</select></label>
+        <p class="hint">You can set this once. To change it later, ask the college office.</p>
+        <button class="btn">Continue</button>
       </form>
     </div>`,
   );
