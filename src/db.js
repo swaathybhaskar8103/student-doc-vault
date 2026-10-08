@@ -106,4 +106,5 @@ addColumn('documents', 'ai_verdict', 'TEXT'); // ok | warn | fail
 addColumn('documents', 'ai_summary', 'TEXT');
 addColumn('documents', 'ai_details', 'TEXT'); // JSON of what the model read
 addColumn('documents', 'ai_checked_at', 'INTEGER');
+addColumn('documents', 'ai_started_at', 'INTEGER'); // when ai_status moved to 'checking', for progress estimates
 db.exec('CREATE INDEX IF NOT EXISTS documents_status ON documents(status, uploaded_at)');

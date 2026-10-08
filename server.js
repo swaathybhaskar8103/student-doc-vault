@@ -20,7 +20,7 @@ import * as views from './src/views.js';
 import { isUnlocked, unlock, keyFileExists, keyFromEnv } from './src/keyVault.js';
 import { isStaffNetwork, STAFF_NETWORKS_CONFIGURED, describeStaffNetworks } from './src/network.js';
 import { mountAdmin } from './src/admin.js';
-import { startAiWorker, initialAiStatus, AI_ENABLED, AI_AUTO_DECISION } from './src/aiCheck.js';
+import { startAiWorker, initialAiStatus, estimatedCheckSeconds, AI_ENABLED, AI_AUTO_DECISION } from './src/aiCheck.js';
 import {
   sendWelcomeEmail, sendStudentIdReminder, sendPasswordChangedEmail, sendPasswordResetCode, sendAccountDeletedEmail,
   sendUnlockAlert,
@@ -526,6 +526,28 @@ app.post('/documents', requireAuth, uploadLimiter, upload.single('file'), checkC
 // Ownership is enforced in the query itself: a student can only ever load rows with their own id.
 const findOwnDoc = (req) =>
   db.prepare('SELECT * FROM documents WHERE id = ? AND student_id = ?').get(req.params.id, req.student.id);
+
+// Polled by the dashboard while a document is queued/checking, to show an estimated % instead of just "Checking…".
+// There's no real progress from the AI model (one call, no partial results), so this is elapsed time against
+// how long recent checks have actually taken, capped below 100 until the check truly finishes.
+app.get('/documents/:id/check-progress', requireAuth, (req, res) => {
+  const doc = findOwnDoc(req);
+  if (!doc) return res.status(404).json({ status: 'gone', percent: 0 });
+  if (!doc.ai_status || !['queued', 'checking'].includes(doc.ai_status)) {
+    // Finished (or never used AI): hand back the same Status-cell markup the page renders, so the
+    // dashboard can swap it in without a full reload — no mid-upload interruption for the student.
+    return res.json({
+      status: doc.ai_status ?? 'done', percent: 100,
+      statusCellHtml: views.statusCell(doc), actionsCellHtml: views.rowActions(doc),
+    });
+  }
+  let percent = 0;
+  if (doc.ai_status === 'checking' && doc.ai_started_at) {
+    const elapsedSeconds = (Date.now() - doc.ai_started_at) / 1000;
+    percent = Math.min(97, Math.round((elapsedSeconds / estimatedCheckSeconds()) * 100));
+  }
+  res.json({ status: doc.ai_status, percent });
+});
 
 // A rejected document can be swapped for a new copy, which goes back into the review queue.
 app.get('/documents/:id/replace', requireAuth, (req, res) => {

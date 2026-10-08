@@ -153,6 +153,16 @@ nav a:hover, .linkish:hover { text-decoration: underline; }
 .ai-badge.warn, .ai-badge.checking { color: var(--warn); }
 .ai-badge.fail { color: var(--danger); }
 .ai-badge.error { color: var(--muted); }
+.ai-badge.checking .spin { display: inline-block; width: 8px; height: 8px; margin-right: 5px;
+  border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  vertical-align: -1px; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ai-badge.checking .spin { animation: none; } }
+.ai-pct { font-size: 11px; color: var(--muted); margin: 3px 0 0; display: flex; align-items: center; gap: 6px; }
+.ai-pct:empty { display: none; }
+.ai-pct-track { width: 60px; height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.ai-pct-fill { height: 100%; background: var(--warn); border-radius: 3px; transition: width .4s ease-out; }
+
 .ai-findings { border: 1px dashed var(--border); border-radius: 10px; padding: 12px 16px; margin: 12px 0; }
 .ai-findings h2 { font-size: 15px; margin-bottom: 8px; }
 .bulk-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;

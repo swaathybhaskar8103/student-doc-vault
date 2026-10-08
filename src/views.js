@@ -49,7 +49,10 @@ const CHECK_LABELS = {
 export function aiBadge(doc, { forStudent = false } = {}) {
   if (!doc.ai_status) return '';
   const labels = CHECK_LABELS[forStudent ? 'student' : 'staff'];
-  if (doc.ai_status === 'queued' || doc.ai_status === 'checking') return `<span class="ai-badge checking">${labels.checking}</span>`;
+  if (doc.ai_status === 'queued' || doc.ai_status === 'checking') {
+    return `<span class="ai-badge checking"><span class="spin" aria-hidden="true"></span>${labels.checking}</span>
+      <div class="ai-pct" data-ai-progress data-doc-id="${esc(doc.id)}"></div>`;
+  }
   if (doc.ai_status === 'error') return `<span class="ai-badge error">${labels.error}</span>`;
   return `<span class="ai-badge ${esc(doc.ai_verdict)}">${esc(labels[doc.ai_verdict] ?? doc.ai_verdict)}</span>`;
 }
@@ -97,6 +100,18 @@ export function checklistPanel(docs, { forStaff = false } = {}) {
 export const statusBadge = (status) =>
   `<span class="badge ${esc(status)}">${esc(STATUS_LABELS[status] ?? status)}</span>`;
 
+// The Status table cell's contents: shared by the initial page render and the AJAX update that replaces
+// it in place once an AI check finishes, so the two never drift out of sync.
+const problemNote = (d) => (d.status === 'rejected' ? d.review_note : d.ai_summary);
+export const statusCell = (d) =>
+  `${statusBadge(d.status)}${d.status === 'pending' ? aiBadge(d, { forStudent: true }) : ''}${
+    canReplace(d) && problemNote(d) ? `<div class="review-note">${d.status === 'rejected' ? 'Reason' : 'Check'}: ${esc(problemNote(d))}</div>` : ''
+  }`;
+export const rowActions = (d) =>
+  `${canReplace(d) ? `<a class="btn small warn-btn" href="/documents/${esc(d.id)}/replace">Upload new copy</a>` : ''}
+   <a class="btn small" href="/documents/${esc(d.id)}/download">Download</a>
+   <a class="btn small danger" href="/documents/${esc(d.id)}/delete">Delete</a>`;
+
 export function layout({ title, csrf, student, admin, refreshSeconds }, body) {
   // Account menu in the top-right corner: a <details> dropdown, so it needs no JavaScript.
   const menu = (title, subtitle, items, logoutAction) => `<details class="menu">
@@ -139,6 +154,7 @@ export function layout({ title, csrf, student, admin, refreshSeconds }, body) {
   <header class="top"><a class="brand" href="${admin ? '/admin/students' : '/'}"><span class="lock">●</span> DocVault</a>${nav}</header>
   <main>${body}</main>
   <footer>Documents are encrypted before they're saved. Always log out on shared computers.</footer>
+  <script src="/ai-progress.js" defer></script>
 </body>
 </html>`;
 }
@@ -224,8 +240,6 @@ const whereFrom = (ip) => WHERE[ip] ?? ip;
 
 export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) => {
   const rejected = docs.filter(canReplace);
-  const checking = docs.some((d) => d.ai_status === 'queued' || d.ai_status === 'checking');
-  const problemNote = (d) => (d.status === 'rejected' ? d.review_note : d.ai_summary);
   const rows = docs.length
     ? docs
         .map(
@@ -234,14 +248,8 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
             <td data-label="File" class="filename">${esc(d.original_name)}</td>
             <td data-label="Size">${fmtSize(d.size)}</td>
             <td data-label="Uploaded">${fmtTime(d.uploaded_at)}</td>
-            <td data-label="Status">${statusBadge(d.status)}${d.status === 'pending' ? aiBadge(d, { forStudent: true }) : ''}${
-              canReplace(d) && problemNote(d) ? `<div class="review-note">${d.status === 'rejected' ? 'Reason' : 'Check'}: ${esc(problemNote(d))}</div>` : ''
-            }</td>
-            <td class="row-actions">
-              ${canReplace(d) ? `<a class="btn small warn-btn" href="/documents/${esc(d.id)}/replace">Upload new copy</a>` : ''}
-              <a class="btn small" href="/documents/${esc(d.id)}/download">Download</a>
-              <a class="btn small danger" href="/documents/${esc(d.id)}/delete">Delete</a>
-            </td>
+            <td data-label="Status" data-status-cell data-doc-id="${esc(d.id)}">${statusCell(d)}</td>
+            <td class="row-actions" data-actions-cell data-doc-id="${esc(d.id)}">${rowActions(d)}</td>
           </tr>`,
         )
         .join('')
@@ -264,7 +272,7 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
     .join('');
 
   return layout(
-    { ...ctx, title: 'My documents', refreshSeconds: checking ? 8 : 0 },
+    { ...ctx, title: 'My documents' },
     `${flashBox(flash)}
     ${rejected.length ? `<div class="alert error attention">
       <p><strong>${rejected.length} document${rejected.length === 1 ? ' needs' : 's need'} your attention.</strong>
@@ -299,7 +307,6 @@ export const dashboard = ({ docs, activity, flash, aiEnabled, aiAuto, ...ctx }) 
         and shows your name. Your documents never leave the college. ${aiAuto
           ? 'Documents that pass are verified straight away; if there is a problem you will see why and can upload a new copy.'
           : 'College staff make the final decision.'}</p>` : ''}
-      ${checking ? '<p class="hint"><strong>Checking your document.</strong> This page refreshes by itself.</p>' : ''}
     </section>
 
     <details class="card activity-card">
